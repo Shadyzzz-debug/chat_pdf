@@ -181,10 +181,10 @@ st.write(f"Versión del Scriptorium (Python): **{platform.python_version()}**")
 
 # Load and display image 
 try:
-    image = Image.open('Chat_pdf.png')
+    image = Image.open('xxx.avif.png')
     st.image(image, width=350, caption="El Sello de la Sabiduría")
 except Exception as e:
-    st.warning(f"No se pudo cargar el Sello de la Sabiduría ('Chat_pdf.png'). {e}")
+    st.warning(f"No se pudo cargar el Sello de la Sabiduría ('xxx.avif.png'). {e}")
 
 # Sidebar information
 with st.sidebar:
