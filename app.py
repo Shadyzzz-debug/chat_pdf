@@ -5,37 +5,39 @@ import json
 import platform
 import time # Añadir import para pausas en la vectorización
 
-# --- Configuraciones del LLM para el entorno ---
-# Usamos la API de Gemini (disponible internamente) para la generación de embeddings y respuestas.
-# En este entorno, 'fetch' maneja la comunicación con la API.
+# Configuración de página Streamlit (DEBE SER LA PRIMERA LLAMADA ST.)
+st.set_page_config(
+    page_title="El Códice del Oráculo Documental",
+    page_icon="📜",
+    layout="wide"
+)
+
+# --- Configuraciones del LLM para el entorno (Gemini) ---
 GEMINI_EMBEDDING_MODEL = "text-embedding-004" 
 GEMINI_CHAT_MODEL = "gemini-2.5-flash-preview-09-2025" 
 API_KEY = "" # Clave dejada vacía para que sea provista por el entorno de Canvas
 
 # --- Funciones de Utilidad (Sin Librerías Externas no esenciales) ---
 
-# Función utilitaria para reintentos con backoff
 def safe_fetch(url, method='POST', headers=None, body=None, max_retries=3, delay=1):
     """
     Realiza llamadas a la API con reintentos y retroceso exponencial.
-    Reemplaza st.experimental_rerun_with_fetch o requests.
+    Utiliza st.legacy_fetch.
     """
     if headers is None:
         headers = {'Content-Type': 'application/json'}
     
     for attempt in range(max_retries):
         try:
-            # Usar st.legacy_fetch si la llamada es síncrona
+            # Usar st.legacy_fetch (síncrona)
             response = st.legacy_fetch(url, method=method, headers=headers, body=body)
             
             if response.status_code == 200:
                 return response.json()
             elif response.status_code in [429, 500, 503] and attempt < max_retries - 1:
-                # Reintento por error de rate limit o servidor
                 time.sleep(delay * (2 ** attempt))
                 continue
             else:
-                # Error fatal
                 error_detail = response.text if response.text else f"Código de estado: {response.status_code}"
                 raise Exception(f"Fallo en la llamada a la API. {error_detail}")
         except Exception as e:
@@ -49,7 +51,6 @@ def safe_fetch(url, method='POST', headers=None, body=None, max_retries=3, delay
 def get_gemini_embedding(text: str) -> np.ndarray:
     """Obtiene el embedding de un texto directamente desde la API de Gemini (síncrona)."""
     
-    # Payload para la API de Embeddings de Gemini
     payload = {
         "model": GEMINI_EMBEDDING_MODEL,
         "content": {
@@ -60,7 +61,6 @@ def get_gemini_embedding(text: str) -> np.ndarray:
     
     response_data = safe_fetch(apiUrl, body=json.dumps(payload))
     
-    # Procesar la respuesta
     if response_data and 'embedding' in response_data:
         return np.array(response_data['embedding']['values'], dtype=np.float32)
     
@@ -69,7 +69,6 @@ def get_gemini_embedding(text: str) -> np.ndarray:
 
 def calculate_cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
     """Calcula la similitud coseno entre dos vectores NumPy."""
-    # Requiere NumPy (asumido como parte del core)
     norm_a = np.linalg.norm(vec_a)
     norm_b = np.linalg.norm(vec_b)
     if norm_a == 0 or norm_b == 0:
@@ -79,7 +78,6 @@ def calculate_cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
 def get_llm_answer(context: str, question: str) -> str:
     """Obtiene la respuesta del LLM directamente desde la API de Gemini (síncrona)."""
     
-    # Construir el prompt RAG con el contexto
     systemPrompt = (
         "Eres un asistente experto que responde preguntas basándose ÚNICAMENTE en el contexto proporcionado. "
         "Si la respuesta no se encuentra en el contexto, indica de manera concisa que la información no está disponible en el documento. "
@@ -95,7 +93,6 @@ def get_llm_answer(context: str, question: str) -> str:
 
     response_data = safe_fetch(apiUrl, body=json.dumps(payload))
     
-    # Manejo de la respuesta
     candidate = response_data.get('candidates', [{}])[0]
     text = candidate.get('content', {}).get('parts', [{}])[0].get('text', None)
 
@@ -103,13 +100,10 @@ def get_llm_answer(context: str, question: str) -> str:
         return text
     return "Error: No se recibió una respuesta válida del Oráculo de Gemini."
 
-# Función de división de texto
 def split_text_into_chunks(text: str, chunk_size=500, chunk_overlap=20):
     """Divide el texto en fragmentos con superposición."""
     chunks = []
-    # Usar una división basada en saltos de línea y luego por tamaño.
     text_segments = text.split('\n')
-    
     current_chunk = ""
     for segment in text_segments:
         if len(current_chunk) + len(segment) + 1 <= chunk_size:
@@ -117,18 +111,15 @@ def split_text_into_chunks(text: str, chunk_size=500, chunk_overlap=20):
         else:
             if current_chunk:
                 chunks.append(current_chunk.strip())
-                # El solapamiento se gestiona simplificando el inicio del nuevo chunk
                 overlap_text = current_chunk[-chunk_overlap:] if len(current_chunk) > chunk_overlap else ""
                 current_chunk = overlap_text + segment + "\n"
             else:
-                # Caso extremo: un solo segmento es más grande que chunk_size
                 chunks.append(segment[:chunk_size])
                 current_chunk = segment[chunk_size-chunk_overlap:]
     
     if current_chunk:
         chunks.append(current_chunk.strip())
         
-    # Filtrar chunks vacíos
     return [chunk for chunk in chunks if chunk]
 
 
@@ -171,17 +162,6 @@ div[data-testid="stTextInput"], div[data-testid="stTextarea"], .stFileUploader, 
     color: #F5F5DC;
 }
 
-/* Dataframe (No hay en este script, pero por consistencia) */
-div[data-testid="stDataFrame"] table {
-    background-color: #1A1A1A;
-    border: 1px solid #5A4832;
-    color: #E0E0E0;
-}
-div[data-testid="stDataFrame"] thead tr th {
-    background-color: #2A2A2A !important;
-    color: #A50000 !important;
-}
-
 /* Texto de Alertas (Revelaciones) */
 .stSuccess { background-color: #20251B; color: #F5F5DC; border-left: 5px solid #5A4832; }
 .stInfo { background-color: #1A1A25; color: #F5F5DC; border-left: 5px solid #5A4832; }
@@ -195,20 +175,12 @@ div[data-testid="stDataFrame"] thead tr th {
 """
 st.markdown(gothic_css_variant, unsafe_allow_html=True)
 
-# Configuración de página Streamlit
-st.set_page_config(
-    page_title="El Códice del Oráculo Documental",
-    page_icon="📜",
-    layout="wide"
-)
-
 # App title and presentation
-st.title('📜 Generación Aumentada por Recuperación (RAG) - Texto Crudo')
+st.title('📜 El Códice del Oráculo Documental (RAG Texto Crudo)')
 st.write(f"Versión del Scriptorium (Python): **{platform.python_version()}**")
 
 # Load and display image 
 try:
-    # Nota: Este archivo ('Chat_pdf.png') debe estar presente en el entorno de ejecución.
     image = Image.open('Chat_pdf.png')
     st.image(image, width=350, caption="El Sello de la Sabiduría")
 except Exception as e:
@@ -231,7 +203,6 @@ document_text = st.text_area("✍️ Pega el Texto Completo del Papiro Digital A
 # Procesar el texto si ha sido pegado
 if document_text:
     try:
-        # Extraer el texto del Papiro Digital (ya lo tenemos en document_text)
         text = document_text
         
         if not text.strip():
@@ -240,11 +211,9 @@ if document_text:
         
         st.info(f"Papiro Descifrado: **{len(text)}** glifos (caracteres)")
         
-        # Generar un ID simple para el texto pegado
         text_hash = hash(text)
 
         # --- Lógica de Almacenamiento y Recuperación (Vectorización en session_state) ---
-        # Si la base de conocimiento no existe o el texto ha cambiado, la creamos
         if 'chunk_embeddings' not in st.session_state or st.session_state.get('text_hash') != text_hash:
             
             # 1. Dividir el texto en fragmentos (Ritos de Fragmentación)
@@ -258,19 +227,18 @@ if document_text:
                 
                 chunk_embeddings = []
                 for i, chunk in enumerate(chunks):
-                    # No se usa st.async_call
                     st.caption(f"Vectorizando fragmento {i+1}/{len(chunks)}...")
                         
                     embedding = get_gemini_embedding(chunk)
                     chunk_embeddings.append(embedding)
 
-                # Almacenar chunks y embeddings en la sesión
+                # Almacenar en la sesión
                 st.session_state.chunk_texts = chunks
                 st.session_state.chunk_embeddings = np.array(chunk_embeddings)
                 st.session_state.text_hash = text_hash
         
         else:
-            # Si ya está en la sesión, recuperamos
+            # Recuperar de la sesión
             chunks = st.session_state.chunk_texts
             chunk_embeddings = st.session_state.chunk_embeddings
 
@@ -309,7 +277,6 @@ if document_text:
             st.markdown(response)
                 
     except Exception as e:
-        # Captura errores de la API (p. ej., clave inválida, límite de rate) o de procesamiento de PDF
         st.error(f"Error Crítico al procesar el Papiro o al llamar a la API: {str(e)}. Verifica la configuración del Oráculo.")
         
 else:
