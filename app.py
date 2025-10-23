@@ -3,6 +3,7 @@ import numpy as np
 from PIL import Image
 import json
 import platform
+import time # Añadir import para pausas en la vectorización
 
 # --- Configuraciones del LLM para el entorno ---
 # Usamos la API de Gemini (disponible internamente) para la generación de embeddings y respuestas.
@@ -13,8 +14,40 @@ API_KEY = "" # Clave dejada vacía para que sea provista por el entorno de Canva
 
 # --- Funciones de Utilidad (Sin Librerías Externas no esenciales) ---
 
-async def get_gemini_embedding(text: str) -> np.ndarray:
-    """Obtiene el embedding de un texto directamente desde la API de Gemini."""
+# Función utilitaria para reintentos con backoff
+def safe_fetch(url, method='POST', headers=None, body=None, max_retries=3, delay=1):
+    """
+    Realiza llamadas a la API con reintentos y retroceso exponencial.
+    Reemplaza st.experimental_rerun_with_fetch o requests.
+    """
+    if headers is None:
+        headers = {'Content-Type': 'application/json'}
+    
+    for attempt in range(max_retries):
+        try:
+            # Usar st.legacy_fetch si la llamada es síncrona
+            response = st.legacy_fetch(url, method=method, headers=headers, body=body)
+            
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code in [429, 500, 503] and attempt < max_retries - 1:
+                # Reintento por error de rate limit o servidor
+                time.sleep(delay * (2 ** attempt))
+                continue
+            else:
+                # Error fatal
+                error_detail = response.text if response.text else f"Código de estado: {response.status_code}"
+                raise Exception(f"Fallo en la llamada a la API. {error_detail}")
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(delay * (2 ** attempt))
+                continue
+            raise e
+    raise Exception("Llamada a la API fallida después de múltiples reintentos.")
+
+
+def get_gemini_embedding(text: str) -> np.ndarray:
+    """Obtiene el embedding de un texto directamente desde la API de Gemini (síncrona)."""
     
     # Payload para la API de Embeddings de Gemini
     payload = {
@@ -25,14 +58,13 @@ async def get_gemini_embedding(text: str) -> np.ndarray:
     }
     apiUrl = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_EMBEDDING_MODEL}:embedContent?key={API_KEY}"
     
-    # Llama a la API (Asumiendo que 'fetch' está disponible en el entorno)
-    response = await st.experimental_rerun_with_fetch(apiUrl, method='POST', headers={'Content-Type': 'application/json'}, body=json.dumps(payload))
+    response_data = safe_fetch(apiUrl, body=json.dumps(payload))
     
     # Procesar la respuesta
-    if response and 'embedding' in response:
-        return np.array(response['embedding']['values'], dtype=np.float32)
+    if response_data and 'embedding' in response_data:
+        return np.array(response_data['embedding']['values'], dtype=np.float32)
     
-    raise Exception(f"Fallo al obtener embedding: {response.get('error', 'Error desconocido')}")
+    raise Exception(f"Fallo al obtener embedding: {response_data.get('error', 'Error desconocido')}")
 
 
 def calculate_cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
@@ -44,8 +76,8 @@ def calculate_cosine_similarity(vec_a: np.ndarray, vec_b: np.ndarray) -> float:
         return 0.0
     return np.dot(vec_a, vec_b) / (norm_a * norm_b)
 
-async def get_llm_answer(context: str, question: str) -> str:
-    """Obtiene la respuesta del LLM directamente desde la API de Gemini (Simulación de fetch)."""
+def get_llm_answer(context: str, question: str) -> str:
+    """Obtiene la respuesta del LLM directamente desde la API de Gemini (síncrona)."""
     
     # Construir el prompt RAG con el contexto
     systemPrompt = (
@@ -61,11 +93,10 @@ async def get_llm_answer(context: str, question: str) -> str:
     
     apiUrl = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_CHAT_MODEL}:generateContent?key={API_KEY}"
 
-    # Llama a la API (Simulación de fetch asíncrono)
-    response = await st.experimental_rerun_with_fetch(apiUrl, method='POST', headers={'Content-Type': 'application/json'}, body=json.dumps(payload))
+    response_data = safe_fetch(apiUrl, body=json.dumps(payload))
     
     # Manejo de la respuesta
-    candidate = response.get('candidates', [{}])[0]
+    candidate = response_data.get('candidates', [{}])[0]
     text = candidate.get('content', {}).get('parts', [{}])[0].get('text', None)
 
     if text:
@@ -87,7 +118,6 @@ def split_text_into_chunks(text: str, chunk_size=500, chunk_overlap=20):
             if current_chunk:
                 chunks.append(current_chunk.strip())
                 # El solapamiento se gestiona simplificando el inicio del nuevo chunk
-                # Podríamos buscar el solapamiento más preciso, pero para cero dependencias, simplificamos.
                 overlap_text = current_chunk[-chunk_overlap:] if len(current_chunk) > chunk_overlap else ""
                 current_chunk = overlap_text + segment + "\n"
             else:
@@ -226,21 +256,12 @@ if document_text:
                 
                 chunk_embeddings = []
                 for i, chunk in enumerate(chunks):
-                    # Solo llama al embedding si la aplicación no está en modo de espera
-                    if not st.session_state.get('is_rerun_pending', False):
-                        st.caption(f"Vectorizando fragmento {i+1}/{len(chunks)}...")
+                    # No se usa st.async_call
+                    st.caption(f"Vectorizando fragmento {i+1}/{len(chunks)}...")
                         
-                        # Llamada asíncrona simulada para el embedding
-                        embedding = st.async_call(get_gemini_embedding, chunk=chunk)
-                        chunk_embeddings.append(embedding)
+                    embedding = get_gemini_embedding(chunk)
+                    chunk_embeddings.append(embedding)
 
-                # Si hubo llamadas asíncronas pendientes, se actualiza el estado y se detiene la ejecución
-                if st.session_state.get('is_rerun_pending', False):
-                    st.info("Esperando la finalización de la vectorización. Reintentando...")
-                    st.session_state.chunk_texts = chunks
-                    st.session_state.text_hash = text_hash
-                    st.stop() # Detener la ejecución actual
-                    
                 # Almacenar chunks y embeddings en la sesión
                 st.session_state.chunk_texts = chunks
                 st.session_state.chunk_embeddings = np.array(chunk_embeddings)
@@ -263,7 +284,7 @@ if document_text:
             with st.spinner("Invocando el Oráculo Aumentado y Buscando Similitud..."):
                 
                 # 1. Obtener embedding de la pregunta
-                query_embedding = st.async_call(get_gemini_embedding, text=user_question)
+                query_embedding = get_gemini_embedding(user_question)
                 
                 # 2. Calcular similitud (cosine similarity)
                 similarities = [
@@ -279,7 +300,7 @@ if document_text:
                 context = "\n\n---\n\n".join(retrieved_chunks)
                 
                 # 5. Llamar al LLM con el contexto (Generación)
-                response = st.async_call(get_llm_answer, context=context, question=user_question)
+                response = get_llm_answer(context, user_question)
             
             # Mostrar la respuesta
             st.markdown("### 🗣️ Respuesta del Oráculo:")
@@ -295,5 +316,5 @@ else:
 # Información adicional y pie de página
 st.markdown("---")
 st.caption("""
-**Notas del Erudito**: Este Códice opera asumiendo que solo se requiere `numpy` además de las librerías estándar de Python y las utilidades de `st.async_call` para la comunicación con la API.
+**Notas del Erudito**: Este Códice opera asumiendo que solo se requiere `numpy` además de las librerías estándar de Python. Se ha modificado para usar llamadas síncronas con reintentos para mayor estabilidad.
 """)
